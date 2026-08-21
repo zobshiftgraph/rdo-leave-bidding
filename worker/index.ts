@@ -15,16 +15,27 @@ import type { Cycle, RdoLine, User } from "./types";
 
 const app = new Hono<AppEnv>();
 
+app.onError((err, c) => {
+  console.error(err);
+  return c.json({ error: err.message || "Server error" }, 500);
+});
+
 app.get("/api/health", (c) => c.json({ ok: true }));
 
+function userCount(n: unknown) {
+  return Number(n ?? 0);
+}
+
 app.get("/api/bootstrap", async (c) => {
+  if (!c.env.DB) return c.json({ error: "Database is not connected." }, 500);
   const row = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
-  return c.json({ needsSetup: !row || row.n === 0 });
+  return c.json({ needsSetup: userCount(row?.n) === 0 });
 });
 
 app.post("/api/bootstrap", async (c) => {
+  if (!c.env.DB) return c.json({ error: "Database is not connected." }, 500);
   const row = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
-  if (row && row.n > 0) return c.json({ error: "Already set up." }, 400);
+  if (userCount(row?.n) > 0) return c.json({ error: "Already set up." }, 400);
   const body = await c.req.json<{ name: string; username: string; password: string; email?: string }>();
   if (!body.name?.trim() || !body.username?.trim() || !body.password || body.password.length < 8) {
     return c.json({ error: "Name, username, and a password of at least 8 characters are required." }, 400);

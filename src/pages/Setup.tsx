@@ -45,15 +45,15 @@ export default function Setup({ onCreated }: { onCreated: () => void }) {
           </label>
           <label className="block text-sm font-medium">
             Email (for turn notifications)
-            <input type="email" className="mt-1 w-full rounded-md border px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <input className="mt-1 w-full rounded-md border px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} />
           </label>
           <label className="block text-sm font-medium">
             Password (8+ characters)
             <input type="password" className="mt-1 w-full rounded-md border px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
           </label>
         </div>
-        <button type="submit" disabled={busy} className="mt-5 w-full rounded-md bg-navy py-2.5 font-medium text-white hover:bg-navy-dark">
-          {busy ? "Creating…" : "Create admin account"}
+        <button type="submit" disabled={busy} className="mt-5 w-full rounded-md bg-navy py-2.5 font-medium text-white hover:bg-navy-dark disabled:opacity-70">
+          {busy ? "Creating account…" : "Create admin account"}
         </button>
       </form>
     </div>

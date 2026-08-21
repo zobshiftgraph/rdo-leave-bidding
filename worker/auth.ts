@@ -13,7 +13,7 @@ export async function hashPassword(password: string, salt?: string) {
   const usedSalt = salt ?? crypto.randomUUID();
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: encoder.encode(usedSalt), iterations: 120000, hash: "SHA-256" },
+    { name: "PBKDF2", salt: encoder.encode(usedSalt), iterations: 8000, hash: "SHA-256" },
     key,
     256,
   );
