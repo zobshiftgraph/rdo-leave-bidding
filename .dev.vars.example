@@ -1,0 +1,5 @@
+SESSION_SECRET=change-me-to-a-long-random-string
+# Optional: send turn emails (https://resend.com)
+# RESEND_API_KEY=re_xxxxxxxxx
+# APP_URL=https://rdo-leave-bidding.your-account.workers.dev
+# MAIL_FROM=RDO Bidding <noreply@your-domain.com>
