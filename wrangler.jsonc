@@ -14,7 +14,7 @@
     {
       "binding": "DB",
       "database_name": "rdo-leave-bidding",
-      "database_id": "local-dev-placeholder",
+      "database_id": "ff9cc967-630c-4f78-aab4-63514e9a34a4",
       "migrations_dir": "migrations"
     }
   ]
