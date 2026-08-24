@@ -1,5 +1,6 @@
 import type { Env, RosterRow, User } from "./types";
 import { WEEKDAYS } from "./types";
+import { sendWebPushes } from "./push";
 
 function splitRosterLine(line: string) {
   if (line.includes("\t")) return line.split("\t").map((c) => c.trim()).filter(Boolean);
@@ -245,6 +246,8 @@ export async function notify(
       console.error("sms failed", err);
     }
   }
+
+  await sendWebPushes(env, userId, title, body);
 }
 
 export async function notifyTurn(env: Env, user: User, phase: "rdo" | "leave", leaveYear?: number) {

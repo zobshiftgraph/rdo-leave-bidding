@@ -11,6 +11,7 @@ import {
   type AppEnv,
 } from "./auth";
 import { eachDate, getQueue, lineDaysLabel, normalizePhone, notify, notifyTurn, parseRoster, slugUsername, slotsForDate, weekdayOf } from "./helpers";
+import { getVapidPair } from "./push";
 import type { Cycle, RdoLine, User } from "./types";
 
 const app = new Hono<AppEnv>();
@@ -136,6 +137,40 @@ app.post("/api/notifications/read", async (c) => {
   await c.env.DB.prepare("UPDATE notifications SET read = 1 WHERE user_id = ?").bind(c.get("user").id).run();
   return c.json({ ok: true });
 });
+
+app.get("/api/push/vapid", async (c) => {
+  try {
+    const keys = await getVapidPair(c.env.DB);
+    return c.json({ publicKey: keys.publicKey });
+  } catch (err) {
+    console.error(err);
+    return c.json({ error: "Run the push database update in D1 first." }, 500);
+  }
+});
+
+app.get("/api/push/status", async (c) => {
+  const row = await c.env.DB
+    .prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?")
+    .bind(c.get("user").id)
+    .first<{ n: number }>();
+  return c.json({ subscribed: Number(row?.n ?? 0) > 0 });
+});
+
+app.post("/api/push/subscribe", async (c) => {
+  const body = await c.req.json<{ endpoint?: string; keys?: { p256dh?: string; auth?: string } }>();
+  if (!body.endpoint || !body.keys?.p256dh || !body.keys?.auth) {
+    return c.json({ error: "Invalid push subscription." }, 400);
+  }
+  await c.env.DB
+    .prepare(
+      `INSERT INTO push_subscriptions (endpoint, user_id, p256dh, auth) VALUES (?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth`,
+    )
+    .bind(body.endpoint, c.get("user").id, body.keys.p256dh, body.keys.auth)
+    .run();
+  return c.json({ ok: true });
+});
+
 
 app.post("/api/roster/preview", requireAdmin, async (c) => {
   const { text } = await c.req.json<{ text: string }>();

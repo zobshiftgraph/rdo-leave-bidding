@@ -13,6 +13,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "^1.0.2",
     "hono": "^4.9.6",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

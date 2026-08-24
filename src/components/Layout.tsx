@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { NotificationItem, PublicUser } from "../types";
+import PushBanner from "./PushBanner";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-2 text-sm font-medium ${isActive ? "bg-white/15 text-white" : "text-slate-200 hover:bg-white/10 hover:text-white"}`;
@@ -123,7 +124,10 @@ export default function Layout({
           </button>
         </div>
       </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <PushBanner />
+        {children}
+      </main>
     </div>
   );
 }

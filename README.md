@@ -73,6 +73,12 @@ npm run deploy
 
 Build settings if Cloudflare asks: framework **Vite / none**, build command `npm run build`, deploy command is handled by Wrangler because this is a Worker with assets.
 
+### Phone alerts (browser notifications)
+
+Free. After login, tap **Turn on alerts**. Each person must do this on their own phone.
+
+iPhone: Share → **Add to Home Screen**, open the app from the icon, then turn on alerts.
+
 ### Optional turn emails and texts
 
 In-app notifications always work after someone logs in. To also email or text people when it is their turn:
