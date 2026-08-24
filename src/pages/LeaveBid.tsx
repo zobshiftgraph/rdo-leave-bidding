@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import MonthCalendar from "../components/MonthCalendar";
+import { useEffect, useState } from "react";
+import { YearCalendars } from "../components/MonthCalendar";
 import { api } from "../api";
 import type { CalendarDay, Cycle, PublicUser } from "../types";
 import { biddingPaused } from "../types";
@@ -12,7 +12,6 @@ export default function LeaveBid({ user }: { user: PublicUser }) {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
-  const [monthView, setMonthView] = useState(0);
 
   async function load() {
     const { cycle: active } = await api<{ cycle: Cycle | null }>("/api/cycles/active");
@@ -60,14 +59,7 @@ export default function LeaveBid({ user }: { user: PublicUser }) {
     }
   }
 
-  const months = useMemo(() => {
-    if (!cycle) return [];
-    return Array.from({ length: 12 }, (_, i) => i);
-  }, [cycle]);
-
   if (!cycle) return <p className="text-slate-600">{error || "No active bid cycle."}</p>;
-
-  const visible = monthView;
 
   return (
     <div className="space-y-4">
@@ -98,37 +90,26 @@ export default function LeaveBid({ user }: { user: PublicUser }) {
       {!myTurn && !submitted && cycle.phase === "leave_bidding" && (
         <p className="rounded-md bg-slate-100 px-3 py-2 text-sm">Waiting for your turn. You will get a notification when it is time to bid.</p>
       )}
-      <div className="flex items-center gap-2">
-        <button type="button" className="rounded border px-3 py-1" onClick={() => setMonthView((m) => Math.max(0, m - 1))}>
-          Prev
-        </button>
-        <select className="rounded border px-2 py-1" value={visible} onChange={(e) => setMonthView(Number(e.target.value))}>
-          {months.map((m) => (
-            <option key={m} value={m}>
-              {new Date(Date.UTC(cycle.leave_year, m, 1)).toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" })}
-            </option>
-          ))}
-        </select>
-        <button type="button" className="rounded border px-3 py-1" onClick={() => setMonthView((m) => Math.min(11, m + 1))}>
-          Next
-        </button>
-      </div>
-      <MonthCalendar
+      <YearCalendars
         year={cycle.leave_year}
-        month={visible}
         days={days}
         selected={selected}
         onToggle={myTurn && !submitted ? toggle : undefined}
         showNames
       />
-      <button
-        type="button"
-        disabled={!myTurn || submitted}
-        onClick={submit}
-        className="rounded-md bg-navy px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
-      >
-        Submit leave bid
-      </button>
+      <div className="sticky bottom-3 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-white/95 px-4 py-3 shadow-lg backdrop-blur">
+        <div className="text-sm">
+          Selected: <strong>{selected.size}</strong> day{selected.size === 1 ? "" : "s"}
+        </div>
+        <button
+          type="button"
+          disabled={!myTurn || submitted}
+          onClick={submit}
+          className="rounded-md bg-navy px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          Submit leave bid
+        </button>
+      </div>
     </div>
   );
 }

@@ -27,6 +27,10 @@ body {
   min-height: 5.5rem;
 }
 
+.cal-cell-compact {
+  min-height: 2.35rem;
+}
+
 @media (max-width: 720px) {
   .cal-cell {
     min-height: 3.75rem;
