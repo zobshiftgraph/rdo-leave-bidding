@@ -73,13 +73,18 @@ npm run deploy
 
 Build settings if Cloudflare asks: framework **Vite / none**, build command `npm run build`, deploy command is handled by Wrangler because this is a Worker with assets.
 
-### Optional turn emails
+### Optional turn emails and texts
 
-In-app notifications always work. To also email people when it is their turn:
+In-app notifications always work after someone logs in. To also email or text people when it is their turn:
 
-1. Put emails on the roster (or in Users).
-2. Create a [Resend](https://resend.com) API key and verify a sending domain.
-3. Set `RESEND_API_KEY`, `APP_URL`, and `MAIL_FROM`.
+1. Add their email and/or phone on the **Users** page.
+2. For email: create a [Resend](https://resend.com) API key and set `RESEND_API_KEY`, `APP_URL`, and `MAIL_FROM`.
+3. For texts: create a [Twilio](https://www.twilio.com) account and phone number, then in Cloudflare go to the Worker → **Settings** → **Variables and Secrets** and add:
+   - `TWILIO_ACCOUNT_SID`
+   - `TWILIO_AUTH_TOKEN`
+   - `TWILIO_FROM_NUMBER` (your Twilio number, like `+15551234567`)
+   - `APP_URL` (your workers.dev link, so the text can include it)
+
 
 ## Typical bid flow
 

@@ -7,6 +7,7 @@ export default function Account({ user, onUpdated }: { user: PublicUser; onUpdat
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [email, setEmail] = useState(user.email ?? "");
+  const [phone, setPhone] = useState(user.phone ?? "");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
 
@@ -15,12 +16,12 @@ export default function Account({ user, onUpdated }: { user: PublicUser; onUpdat
     setError("");
     setDone("");
     try {
-      const data = await api<{ email: string | null }>("/api/me/email", {
+      const data = await api<{ email: string | null; phone: string | null }>("/api/me/email", {
         method: "POST",
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, phone }),
       });
-      setDone("Email saved.");
-      onUpdated({ ...user, email: data.email });
+      setDone("Contact info saved.");
+      onUpdated({ ...user, email: data.email, phone: data.phone });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save email");
     }
@@ -62,11 +63,15 @@ export default function Account({ user, onUpdated }: { user: PublicUser; onUpdat
       </div>
       <form onSubmit={saveEmail} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
         <label className="block text-sm font-medium">
-          Email (for turn notifications)
+          Email (optional)
           <input className="mt-1 w-full rounded-md border px-3 py-2" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" />
         </label>
+        <label className="block text-sm font-medium">
+          Phone (text when it is your turn)
+          <input className="mt-1 w-full rounded-md border px-3 py-2" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="555-123-4567" />
+        </label>
         <button type="submit" className="rounded-md bg-navy px-4 py-2 text-sm font-medium text-white">
-          Save email
+          Save contact info
         </button>
       </form>
       <form onSubmit={submit} className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">

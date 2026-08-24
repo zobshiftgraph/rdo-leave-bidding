@@ -10,7 +10,7 @@ import {
   verifyPassword,
   type AppEnv,
 } from "./auth";
-import { eachDate, getQueue, lineDaysLabel, notify, notifyTurn, parseRoster, slugUsername, slotsForDate, weekdayOf } from "./helpers";
+import { eachDate, getQueue, lineDaysLabel, normalizePhone, notify, notifyTurn, parseRoster, slugUsername, slotsForDate, weekdayOf } from "./helpers";
 import type { Cycle, RdoLine, User } from "./types";
 
 const app = new Hono<AppEnv>();
@@ -56,7 +56,7 @@ app.post("/api/auth/login", async (c) => {
   const body = await c.req.json<{ username: string; password: string }>();
   const user = await c.env.DB
     .prepare(
-      `SELECT id, name, username, email, role, seniority, employee_number, active, must_change_password, password_hash, password_salt
+      `SELECT id, name, username, email, phone, role, seniority, employee_number, active, must_change_password, password_hash, password_salt
        FROM users WHERE lower(username) = lower(?) AND active = 1`,
     )
     .bind(body.username?.trim() ?? "")
@@ -105,13 +105,26 @@ app.post("/api/me/password", async (c) => {
 
 app.post("/api/me/email", async (c) => {
   const user = c.get("user");
-  const body = await c.req.json<{ email?: string }>();
+  const body = await c.req.json<{ email?: string; phone?: string }>();
   const email = String(body.email ?? "").trim();
   if (email && !email.includes("@")) return c.json({ error: "Enter a valid email address." }, 400);
-  await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email || null, user.id).run();
-  return c.json({ ok: true, email: email || null });
+  const phoneRaw = body.phone !== undefined ? String(body.phone) : undefined;
+  let phone: string | null | undefined;
+  if (phoneRaw !== undefined) {
+    phone = normalizePhone(phoneRaw);
+    if (phoneRaw.trim() && phone === undefined) return c.json({ error: "Enter a 10-digit phone number." }, 400);
+    if (phone === undefined) phone = null;
+  }
+  if (phoneRaw !== undefined) {
+    await c.env.DB.prepare("UPDATE users SET email = ?, phone = ? WHERE id = ?").bind(email || null, phone, user.id).run();
+  } else {
+    await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email || null, user.id).run();
+  }
+  const updated = await c.env.DB.prepare("SELECT email, phone FROM users WHERE id = ?").bind(user.id).first<{ email: string | null; phone: string | null }>();
+  return c.json({ ok: true, email: updated?.email ?? null, phone: updated?.phone ?? null });
 });
 
+app.get("/api/notifications", async (c) => {
   const { results } = await c.env.DB
     .prepare("SELECT id, title, body, read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50")
     .bind(c.get("user").id)
@@ -135,8 +148,8 @@ app.post("/api/roster/import", requireAdmin, async (c) => {
   if (rows.length === 0) return c.json({ error: "No names found in the pasted roster." }, 400);
 
   const existing = await c.env.DB
-    .prepare("SELECT id, name, username, email, employee_number FROM users")
-    .all<{ id: number; name: string; username: string; email: string | null; employee_number: string | null }>();
+    .prepare("SELECT id, name, username, email, phone, employee_number FROM users")
+    .all<{ id: number; name: string; username: string; email: string | null; phone: string | null; employee_number: string | null }>();
   const used = new Set((existing.results ?? []).map((u) => u.username.toLowerCase()));
   const created: { name: string; username: string; tempPassword: string; seniority: number }[] = [];
   const updated: string[] = [];
@@ -155,10 +168,10 @@ app.post("/api/roster/import", requireAdmin, async (c) => {
     if (found) {
       await c.env.DB
         .prepare(
-          `UPDATE users SET name = ?, email = COALESCE(?, email), employee_number = COALESCE(?, employee_number),
+          `UPDATE users SET name = ?, email = COALESCE(?, email), phone = COALESCE(?, phone), employee_number = COALESCE(?, employee_number),
            seniority = ?, active = 1 WHERE id = ?`,
         )
-        .bind(row.name, row.email ?? null, row.employee_number ?? null, row.seniority, found.id)
+        .bind(row.name, row.email ?? null, row.phone ? normalizePhone(row.phone) ?? null : null, row.employee_number ?? null, row.seniority, found.id)
         .run();
       updated.push(row.name);
     } else {
@@ -167,10 +180,10 @@ app.post("/api/roster/import", requireAdmin, async (c) => {
       const { hash, salt } = await hashPassword(tempPassword);
       await c.env.DB
         .prepare(
-          `INSERT INTO users (name, username, email, password_hash, password_salt, role, seniority, employee_number, must_change_password)
-           VALUES (?, ?, ?, ?, ?, 'bidder', ?, ?, 1)`,
+          `INSERT INTO users (name, username, email, phone, password_hash, password_salt, role, seniority, employee_number, must_change_password)
+           VALUES (?, ?, ?, ?, ?, ?, 'bidder', ?, ?, 1)`,
         )
-        .bind(row.name, username, row.email ?? null, hash, salt, row.seniority, row.employee_number ?? null)
+        .bind(row.name, username, row.email ?? null, row.phone ? normalizePhone(row.phone) ?? null : null, hash, salt, row.seniority, row.employee_number ?? null)
         .run();
       created.push({ name: row.name, username, tempPassword, seniority: row.seniority });
     }
@@ -186,7 +199,7 @@ app.post("/api/roster/import", requireAdmin, async (c) => {
 app.get("/api/users", requireAdmin, async (c) => {
   const { results } = await c.env.DB
     .prepare(
-      `SELECT id, name, username, email, role, seniority, employee_number, active, must_change_password
+      `SELECT id, name, username, email, phone, role, seniority, employee_number, active, must_change_password
        FROM users ORDER BY CASE WHEN seniority IS NULL THEN 1 ELSE 0 END, seniority, name`,
     )
     .all();
@@ -196,7 +209,7 @@ app.get("/api/users", requireAdmin, async (c) => {
 app.patch("/api/users/:id", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
   const actor = c.get("user");
-  const body = await c.req.json<{ role?: string; active?: boolean; email?: string }>();
+  const body = await c.req.json<{ role?: string; active?: boolean; email?: string; phone?: string }>();
   const user = await c.env.DB.prepare("SELECT id, role FROM users WHERE id = ?").bind(id).first<{ id: number; role: string }>();
   if (!user) return c.json({ error: "User not found." }, 404);
   if (body.role === "bidder" || body.role === "admin") {
@@ -218,6 +231,11 @@ app.patch("/api/users/:id", requireAdmin, async (c) => {
     const email = String(body.email).trim();
     if (email && !email.includes("@")) return c.json({ error: "Enter a valid email address." }, 400);
     await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email || null, id).run();
+  }
+  if (body.phone !== undefined) {
+    const phone = normalizePhone(String(body.phone));
+    if (String(body.phone).trim() && phone === undefined) return c.json({ error: "Enter a 10-digit phone number." }, 400);
+    await c.env.DB.prepare("UPDATE users SET phone = ? WHERE id = ?").bind(phone ?? null, id).run();
   }
   return c.json({ ok: true });
 });

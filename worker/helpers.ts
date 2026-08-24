@@ -11,7 +11,7 @@ function looksLikeHeaderRow(cells: string[]) {
   return cells.some((h) => {
     const v = h.toLowerCase();
     if (v.includes("@")) return false;
-    return /^(name|seniority|rank|email|e-?mail|employee|#)$/i.test(h) || /name|seniority|email|employee/.test(v);
+    return /^(name|seniority|rank|email|e-?mail|employee|#|phone|cell|mobile)$/i.test(h) || /name|seniority|email|employee|phone|cell|mobile/.test(v);
   });
 }
 
@@ -28,6 +28,7 @@ export function parseRoster(text: string): RosterRow[] {
   let seniorityIdx = -1;
   let emailIdx = -1;
   let empIdx = -1;
+  let phoneIdx = -1;
   const headerCells = splitRosterLine(lines[0]);
   const header = headerCells.map((c) => c.toLowerCase());
   if (looksLikeHeaderRow(headerCells)) {
@@ -35,6 +36,7 @@ export function parseRoster(text: string): RosterRow[] {
     seniorityIdx = header.findIndex((h) => /seniority|rank/.test(h) || h === "#");
     emailIdx = header.findIndex((h) => h.includes("email") || h.includes("mail"));
     empIdx = header.findIndex((h) => /(employee|emp\b|id)/.test(h) && !h.includes("email") && !h.includes("name"));
+    phoneIdx = header.findIndex((h) => /phone|cell|mobile/.test(h));
     lines = lines.slice(1);
   }
 
@@ -48,12 +50,14 @@ export function parseRoster(text: string): RosterRow[] {
     let seniorityRaw = "";
     let email: string | undefined;
     let employee_number: string | undefined;
+    let phone: string | undefined;
 
     if (nameIdx >= 0) {
       name = (cells[nameIdx] || "").replace(/^\d+[.)\-]\s*/, "").trim();
       seniorityRaw = seniorityIdx >= 0 ? cells[seniorityIdx] || "" : "";
       email = emailIdx >= 0 ? cells[emailIdx] : cells.find((c) => c.includes("@"));
       if (empIdx >= 0 && cells[empIdx] && empIdx !== nameIdx) employee_number = cells[empIdx];
+      if (phoneIdx >= 0 && cells[phoneIdx]) phone = cells[phoneIdx];
     } else {
       email = cells.find((c) => c.includes("@"));
       const rest = cells.filter((c) => c !== email);
@@ -82,6 +86,7 @@ export function parseRoster(text: string): RosterRow[] {
       seniority: Number.isFinite(seniority) && seniority > 0 ? seniority : auto,
       name,
       email: email || undefined,
+      phone,
       employee_number,
     });
     auto += 1;
@@ -135,7 +140,7 @@ export function lineDaysLabel(daysJson: string) {
 export async function getBidders(db: D1Database) {
   const { results } = await db
     .prepare(
-      `SELECT id, name, username, email, role, seniority, employee_number, active, must_change_password
+      `SELECT id, name, username, email, phone, role, seniority, employee_number, active, must_change_password
        FROM users
        WHERE active = 1 AND seniority IS NOT NULL
        ORDER BY seniority ASC`,
@@ -173,6 +178,16 @@ export async function slotsForDate(
   return window?.slots_per_day ?? cycle.default_slots_per_day;
 }
 
+export function normalizePhone(input: string) {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 10 && digits.length <= 15) return `+${digits}`;
+  return undefined;
+}
+
 export async function notify(
   env: Env,
   userId: number,
@@ -180,26 +195,55 @@ export async function notify(
   body: string,
 ) {
   await env.DB.prepare("INSERT INTO notifications (user_id, title, body) VALUES (?, ?, ?)").bind(userId, title, body).run();
-  if (!env.RESEND_API_KEY) return;
-  const user = await env.DB.prepare("SELECT name, email FROM users WHERE id = ?").bind(userId).first<{ name: string; email: string | null }>();
-  if (!user?.email) return;
-  const from = env.MAIL_FROM || "RDO Bidding <noreply@example.com>";
-  try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to: [user.email],
-        subject: title,
-        text: `Hi ${user.name},\n\n${body}\n\n${env.APP_URL || ""}`.trim(),
-      }),
-    });
-  } catch (err) {
-    console.error("email failed", err);
+  const user = await env.DB
+    .prepare("SELECT name, email, phone FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ name: string; email: string | null; phone: string | null }>();
+  if (!user) return;
+
+  const link = env.APP_URL?.replace(/\/$/, "") || "";
+  const text = [body, link].filter(Boolean).join(" ");
+
+  if (env.RESEND_API_KEY && user.email) {
+    const from = env.MAIL_FROM || "RDO Bidding <noreply@example.com>";
+    try {
+      await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from,
+          to: [user.email],
+          subject: title,
+          text: `Hi ${user.name},\n\n${body}\n\n${link}`.trim(),
+        }),
+      });
+    } catch (err) {
+      console.error("email failed", err);
+    }
+  }
+
+  if (env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER && user.phone) {
+    try {
+      const auth = btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`);
+      const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          To: user.phone,
+          From: env.TWILIO_FROM_NUMBER,
+          Body: `${title}. ${text}`.slice(0, 320),
+        }),
+      });
+      if (!res.ok) console.error("sms failed", await res.text());
+    } catch (err) {
+      console.error("sms failed", err);
+    }
   }
 }
 

@@ -6,6 +6,7 @@ export interface PublicUser {
   name: string;
   username: string;
   email: string | null;
+  phone: string | null;
   role: Role;
   seniority: number | null;
   employee_number: string | null;

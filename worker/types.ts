@@ -8,6 +8,9 @@ export interface Env {
   RESEND_API_KEY?: string;
   APP_URL?: string;
   MAIL_FROM?: string;
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_FROM_NUMBER?: string;
 }
 
 export interface User {
@@ -18,6 +21,7 @@ export interface User {
   role: Role;
   seniority: number | null;
   employee_number: string | null;
+  phone: string | null;
   active: number;
   must_change_password: number;
 }
@@ -49,6 +53,7 @@ export interface RosterRow {
   seniority: number;
   name: string;
   email?: string;
+  phone?: string;
   employee_number?: string;
 }
 

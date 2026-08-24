@@ -3,3 +3,7 @@ SESSION_SECRET=change-me-to-a-long-random-string
 # RESEND_API_KEY=re_xxxxxxxxx
 # APP_URL=https://rdo-leave-bidding.your-account.workers.dev
 # MAIL_FROM=RDO Bidding <noreply@your-domain.com>
+# Optional: send turn texts (https://www.twilio.com)
+# TWILIO_ACCOUNT_SID=ACxxxxxxxx
+# TWILIO_AUTH_TOKEN=xxxxxxxx
+# TWILIO_FROM_NUMBER=+15551234567

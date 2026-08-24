@@ -57,7 +57,7 @@ export async function clearSession(c: Context<AppEnv>) {
   deleteCookie(c, "session", { path: "/" });
 }
 
-const USER_COLUMNS = `id, name, username, email, role, seniority, employee_number, active, must_change_password`;
+const USER_COLUMNS = `id, name, username, email, phone, role, seniority, employee_number, active, must_change_password`;
 
 export async function userFromSession(db: D1Database, token: string | undefined): Promise<User | null> {
   if (!token) return null;
@@ -92,6 +92,7 @@ export function publicUser(user: User) {
     name: user.name,
     username: user.username,
     email: user.email,
+    phone: user.phone ?? null,
     role: user.role,
     seniority: user.seniority,
     employee_number: user.employee_number,
