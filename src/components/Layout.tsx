@@ -111,8 +111,8 @@ export default function Layout({
           <div className="hidden text-right text-xs sm:block">
             <div className="font-medium">{user.name}</div>
             <div className="text-slate-300">
-              {user.role}
-              {user.seniority ? ` · #${user.seniority}` : ""}
+              {user.role === "admin" ? "admin" : "bidder"}
+              {user.seniority ? ` · bid #${user.seniority}` : ""}
             </div>
           </div>
           <NavLink to="/account" className="text-sm text-slate-200 hover:text-white">

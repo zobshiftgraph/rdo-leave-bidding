@@ -187,10 +187,20 @@ app.get("/api/users", requireAdmin, async (c) => {
 
 app.patch("/api/users/:id", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
+  const actor = c.get("user");
   const body = await c.req.json<{ role?: string; active?: boolean; email?: string }>();
   const user = await c.env.DB.prepare("SELECT id, role FROM users WHERE id = ?").bind(id).first<{ id: number; role: string }>();
   if (!user) return c.json({ error: "User not found." }, 404);
   if (body.role === "bidder" || body.role === "admin") {
+    if (body.role === "bidder" && user.role === "admin") {
+      if (id === actor.id) return c.json({ error: "You cannot remove your own admin access." }, 400);
+      const admins = await c.env.DB
+        .prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1")
+        .first<{ n: number }>();
+      if (Number(admins?.n ?? 0) <= 1) {
+        return c.json({ error: "There must be at least one admin." }, 400);
+      }
+    }
     await c.env.DB.prepare("UPDATE users SET role = ? WHERE id = ?").bind(body.role, id).run();
   }
   if (typeof body.active === "boolean") {

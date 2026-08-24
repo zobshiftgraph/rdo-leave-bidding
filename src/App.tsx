@@ -84,7 +84,7 @@ export default function App() {
           <>
             <Route path="/roster" element={<Roster />} />
             <Route path="/cycle" element={<CycleSetup />} />
-            <Route path="/users" element={<Users />} />
+            <Route path="/users" element={<Users currentUser={user} />} />
           </>
         )}
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -40,7 +40,8 @@ export default function Dashboard({ user }: { user: PublicUser }) {
       <div>
         <h1 className="text-2xl font-semibold text-navy">Welcome, {user.name.split(" ")[0]}</h1>
         <p className="text-slate-600">
-          {user.seniority ? `Seniority #${user.seniority}` : user.role === "admin" ? "Administrator" : "Account"}
+          {user.role === "admin" ? "Administrator" : "Account"}
+          {user.seniority ? ` · Seniority #${user.seniority} (you can bid)` : user.role === "admin" ? " · add yourself to the roster to bid" : ""}
         </p>
       </div>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
