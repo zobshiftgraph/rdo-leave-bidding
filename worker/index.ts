@@ -103,7 +103,15 @@ app.post("/api/me/password", async (c) => {
   return c.json({ ok: true });
 });
 
-app.get("/api/notifications", async (c) => {
+app.post("/api/me/email", async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json<{ email?: string }>();
+  const email = String(body.email ?? "").trim();
+  if (email && !email.includes("@")) return c.json({ error: "Enter a valid email address." }, 400);
+  await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email || null, user.id).run();
+  return c.json({ ok: true, email: email || null });
+});
+
   const { results } = await c.env.DB
     .prepare("SELECT id, title, body, read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 50")
     .bind(c.get("user").id)
@@ -207,7 +215,9 @@ app.patch("/api/users/:id", requireAdmin, async (c) => {
     await c.env.DB.prepare("UPDATE users SET active = ? WHERE id = ?").bind(body.active ? 1 : 0, id).run();
   }
   if (body.email !== undefined) {
-    await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(body.email || null, id).run();
+    const email = String(body.email).trim();
+    if (email && !email.includes("@")) return c.json({ error: "Enter a valid email address." }, 400);
+    await c.env.DB.prepare("UPDATE users SET email = ? WHERE id = ?").bind(email || null, id).run();
   }
   return c.json({ ok: true });
 });
