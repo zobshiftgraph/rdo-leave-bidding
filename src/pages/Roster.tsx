@@ -123,7 +123,10 @@ export default function Roster() {
           </p>
           {result.created.length > 0 && (
             <>
-              <p className="mt-2 text-sm">Give each person their username and temporary password. They will be asked to change it on first login.</p>
+              <p className="mt-2 text-sm">
+                Give each person their username and temporary password. They will be asked to change it on first login.
+                Download the CSV now — these passwords are not stored. If you leave this page, go to Users and create first-time passwords again.
+              </p>
               <button type="button" onClick={downloadCsv} className="mt-3 rounded-md bg-navy px-3 py-1.5 text-sm text-white">
                 Download login CSV
               </button>

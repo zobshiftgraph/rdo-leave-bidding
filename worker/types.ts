@@ -38,6 +38,7 @@ export interface Cycle {
   default_slots_per_day: number;
   max_leave_days: number | null;
   is_active: number;
+  paused: number;
 }
 
 export interface RdoLine {

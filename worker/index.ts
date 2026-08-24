@@ -238,7 +238,12 @@ app.get("/api/users", requireAdmin, async (c) => {
        FROM users ORDER BY CASE WHEN seniority IS NULL THEN 1 ELSE 0 END, seniority, name`,
     )
     .all();
-  return c.json({ users: results ?? [] });
+  return c.json({
+    users: (results ?? []).map((u) => ({
+      ...u,
+      must_change_password: Boolean((u as { must_change_password: number | boolean }).must_change_password),
+    })),
+  });
 });
 
 app.patch("/api/users/:id", requireAdmin, async (c) => {
@@ -275,6 +280,29 @@ app.patch("/api/users/:id", requireAdmin, async (c) => {
   return c.json({ ok: true });
 });
 
+app.post("/api/users/issue-passwords", requireAdmin, async (c) => {
+  const actor = c.get("user");
+  const { results } = await c.env.DB
+    .prepare(
+      `SELECT id, name, username FROM users
+       WHERE active = 1 AND must_change_password = 1 AND id != ?
+       ORDER BY seniority, name`,
+    )
+    .bind(actor.id)
+    .all<{ id: number; name: string; username: string }>();
+  const issued: { name: string; username: string; tempPassword: string }[] = [];
+  for (const row of results ?? []) {
+    const tempPassword = randomPassword();
+    const { hash, salt } = await hashPassword(tempPassword);
+    await c.env.DB
+      .prepare("UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 1 WHERE id = ?")
+      .bind(hash, salt, row.id)
+      .run();
+    issued.push({ name: row.name, username: row.username, tempPassword });
+  }
+  return c.json({ issued });
+});
+
 app.post("/api/users/:id/reset-password", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
   const tempPassword = randomPassword();
@@ -288,13 +316,58 @@ app.post("/api/users/:id/reset-password", requireAdmin, async (c) => {
   return c.json({ tempPassword, username: user?.username, name: user?.name });
 });
 
+async function ensurePausedColumn(db: D1Database) {
+  try {
+    await db.prepare("SELECT paused FROM cycles LIMIT 1").first();
+  } catch {
+    try {
+      await db.prepare("ALTER TABLE cycles ADD COLUMN paused INTEGER NOT NULL DEFAULT 0").run();
+    } catch {
+      /* column already exists */
+    }
+  }
+}
+
+function asCycle(row: Cycle | null | undefined): Cycle | null {
+  if (!row) return null;
+  return { ...row, paused: Number(row.paused ?? 0) ? 1 : 0 };
+}
+
+function cyclePaused(cycle: Cycle) {
+  return Boolean(cycle.paused) && (cycle.phase === "rdo_bidding" || cycle.phase === "leave_bidding");
+}
+
+async function assertLeaveCapacity(
+  db: D1Database,
+  cycleId: number,
+  defaultSlots: number,
+  windows: { start_date: string; end_date: string; slots_per_day: number }[],
+) {
+  const { results } = await db
+    .prepare("SELECT leave_date, COUNT(*) AS n FROM leave_bids WHERE cycle_id = ? GROUP BY leave_date")
+    .bind(cycleId)
+    .all<{ leave_date: string; n: number }>();
+  const sorted = [...windows].sort((a, b) => a.start_date.localeCompare(b.start_date));
+  for (const row of results ?? []) {
+    const win = [...sorted].reverse().find((w) => w.start_date <= row.leave_date && w.end_date >= row.leave_date);
+    const slots = win?.slots_per_day ?? defaultSlots;
+    if (row.n > slots) {
+      return `${row.leave_date} already has ${row.n} leave bid${row.n === 1 ? "" : "s"}; cannot set that day to ${slots} slot${slots === 1 ? "" : "s"}.`;
+    }
+  }
+  return null;
+}
+
 async function getActiveCycle(db: D1Database) {
-  return db.prepare("SELECT * FROM cycles WHERE is_active = 1 ORDER BY id DESC LIMIT 1").first<Cycle>();
+  await ensurePausedColumn(db);
+  const row = await db.prepare("SELECT * FROM cycles WHERE is_active = 1 ORDER BY id DESC LIMIT 1").first<Cycle>();
+  return asCycle(row);
 }
 
 app.get("/api/cycles", async (c) => {
+  await ensurePausedColumn(c.env.DB);
   const { results } = await c.env.DB.prepare("SELECT * FROM cycles ORDER BY id DESC").all<Cycle>();
-  return c.json({ cycles: results ?? [] });
+  return c.json({ cycles: (results ?? []).map((row) => asCycle(row)!) });
 });
 
 app.get("/api/cycles/active", async (c) => {
@@ -356,11 +429,55 @@ app.post("/api/cycles", requireAdmin, async (c) => {
 
 app.patch("/api/cycles/:id", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const body = await c.req.json<Partial<Cycle>>();
-  const canEditStructure = cycle.phase === "setup";
-  const leaveYear = canEditStructure ? (body.leave_year ?? cycle.leave_year) : cycle.leave_year;
+
+  const leaveYear = body.leave_year ?? cycle.leave_year;
+  if (leaveYear !== cycle.leave_year) {
+    const leaveBids = await c.env.DB
+      .prepare("SELECT COUNT(*) AS n FROM leave_bids WHERE cycle_id = ?")
+      .bind(id)
+      .first<{ n: number }>();
+    if (Number(leaveBids?.n ?? 0) > 0) {
+      return c.json({ error: "Leave year cannot change after leave bids are in." }, 400);
+    }
+  }
+
+  const rdoMode = body.rdo_mode === "weekdays" || body.rdo_mode === "lines" ? body.rdo_mode : cycle.rdo_mode;
+  if (rdoMode !== cycle.rdo_mode) {
+    const rdoBids = await c.env.DB
+      .prepare("SELECT COUNT(*) AS n FROM rdo_bids WHERE cycle_id = ? AND skipped = 0")
+      .bind(id)
+      .first<{ n: number }>();
+    if (Number(rdoBids?.n ?? 0) > 0) {
+      return c.json({ error: "RDO style cannot change after RDO bids are in." }, 400);
+    }
+  }
+
+  const defaultSlots = body.default_slots_per_day ?? cycle.default_slots_per_day;
+  const maxLeave = body.max_leave_days === undefined ? cycle.max_leave_days : body.max_leave_days;
+  if (maxLeave != null) {
+    const heaviest = await c.env.DB
+      .prepare(
+        `SELECT COUNT(*) AS n FROM leave_bids WHERE cycle_id = ?
+         GROUP BY user_id ORDER BY n DESC LIMIT 1`,
+      )
+      .bind(id)
+      .first<{ n: number }>();
+    if (Number(heaviest?.n ?? 0) > maxLeave) {
+      return c.json({ error: `Someone already bid ${heaviest?.n} days. Raise the limit or leave it blank.` }, 400);
+    }
+  }
+
+  const windows = await c.env.DB
+    .prepare("SELECT start_date, end_date, slots_per_day FROM leave_slot_windows WHERE cycle_id = ?")
+    .bind(id)
+    .all<{ start_date: string; end_date: string; slots_per_day: number }>();
+  const capError = await assertLeaveCapacity(c.env.DB, id, defaultSlots, windows.results ?? []);
+  if (capError) return c.json({ error: capError }, 400);
+
   await c.env.DB
     .prepare(
       `UPDATE cycles SET name = ?, leave_year = ?, leave_start = ?, leave_end = ?, rdo_mode = ?, rdo_days_count = ?,
@@ -371,10 +488,10 @@ app.patch("/api/cycles/:id", requireAdmin, async (c) => {
       leaveYear,
       `${leaveYear}-01-01`,
       `${leaveYear}-12-31`,
-      canEditStructure ? (body.rdo_mode ?? cycle.rdo_mode) : cycle.rdo_mode,
-      canEditStructure ? (body.rdo_days_count ?? cycle.rdo_days_count) : cycle.rdo_days_count,
-      body.default_slots_per_day ?? cycle.default_slots_per_day,
-      body.max_leave_days === undefined ? cycle.max_leave_days : body.max_leave_days,
+      rdoMode,
+      body.rdo_days_count ?? cycle.rdo_days_count,
+      defaultSlots,
+      maxLeave,
       id,
     )
     .run();
@@ -383,23 +500,72 @@ app.patch("/api/cycles/:id", requireAdmin, async (c) => {
 
 app.put("/api/cycles/:id/rdo-lines", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
-  if (cycle.phase !== "setup") return c.json({ error: "RDO lines can only be edited before bidding starts." }, 400);
-  const { lines } = await c.req.json<{ lines: { name: string; days: number[]; slots: number }[] }>();
-  await c.env.DB.prepare("DELETE FROM rdo_lines WHERE cycle_id = ?").bind(id).run();
-  const stmts = (lines ?? []).map((line, i) =>
-    c.env.DB
-      .prepare("INSERT INTO rdo_lines (cycle_id, name, days, slots, sort_order) VALUES (?, ?, ?, ?, ?)")
-      .bind(id, line.name, JSON.stringify(line.days), Math.max(1, Number(line.slots) || 1), i),
-  );
-  if (stmts.length) await c.env.DB.batch(stmts);
+  const { lines } = await c.req.json<{ lines: { id?: number; name: string; days: number[]; slots: number }[] }>();
+  const existing = await c.env.DB.prepare("SELECT * FROM rdo_lines WHERE cycle_id = ?").bind(id).all<RdoLine>();
+  const bids = await c.env.DB
+    .prepare("SELECT rdo_line_id, COUNT(*) AS n FROM rdo_bids WHERE cycle_id = ? AND skipped = 0 AND rdo_line_id IS NOT NULL GROUP BY rdo_line_id")
+    .bind(id)
+    .all<{ rdo_line_id: number; n: number }>();
+  const taken: Record<number, number> = {};
+  for (const row of bids.results ?? []) taken[row.rdo_line_id] = row.n;
+  const keepIds = new Set((lines ?? []).map((line) => line.id).filter((lineId): lineId is number => Number.isFinite(lineId)));
+
+  for (const old of existing.results ?? []) {
+    if (keepIds.has(old.id)) continue;
+    if ((taken[old.id] ?? 0) > 0) {
+      return c.json({ error: `Cannot remove "${old.name}" because people already bid that line.` }, 400);
+    }
+    await c.env.DB.prepare("DELETE FROM rdo_lines WHERE id = ? AND cycle_id = ?").bind(old.id, id).run();
+  }
+
+  for (const [i, line] of (lines ?? []).entries()) {
+    const name = line.name.trim();
+    if (!name) return c.json({ error: "Each RDO line needs a name." }, 400);
+    const slots = Math.max(1, Number(line.slots) || 1);
+    const takenN = line.id ? (taken[line.id] ?? 0) : 0;
+    if (slots < takenN) {
+      return c.json({ error: `Cannot set "${name}" to ${slots} slots; ${takenN} people already chose it.` }, 400);
+    }
+    if (line.id) {
+      const match = (existing.results ?? []).find((row) => row.id === line.id);
+      if (!match) return c.json({ error: "An RDO line could not be found. Reload Bid setup and try again." }, 400);
+      await c.env.DB
+        .prepare("UPDATE rdo_lines SET name = ?, days = ?, slots = ?, sort_order = ? WHERE id = ? AND cycle_id = ?")
+        .bind(name, JSON.stringify(line.days), slots, i, line.id, id)
+        .run();
+    } else {
+      await c.env.DB
+        .prepare("INSERT INTO rdo_lines (cycle_id, name, days, slots, sort_order) VALUES (?, ?, ?, ?, ?)")
+        .bind(id, name, JSON.stringify(line.days), slots, i)
+        .run();
+    }
+  }
   return c.json({ ok: true });
 });
 
 app.put("/api/cycles/:id/weekday-caps", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
+  if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const { caps } = await c.req.json<{ caps: { weekday: number; slots: number }[] }>();
+  const bids = await c.env.DB
+    .prepare("SELECT weekdays FROM rdo_bids WHERE cycle_id = ? AND skipped = 0 AND weekdays IS NOT NULL")
+    .bind(id)
+    .all<{ weekdays: string }>();
+  const taken: Record<number, number> = {};
+  for (const row of bids.results ?? []) {
+    for (const day of JSON.parse(row.weekdays) as number[]) {
+      taken[day] = (taken[day] ?? 0) + 1;
+    }
+  }
+  for (const cap of caps ?? []) {
+    const slots = Math.max(0, Number(cap.slots) || 0);
+    if (slots < (taken[cap.weekday] ?? 0)) {
+      return c.json({ error: `Cannot lower that weekday below ${taken[cap.weekday]} — that many people already have it off.` }, 400);
+    }
+  }
   const stmts = (caps ?? []).map((cap) =>
     c.env.DB
       .prepare("INSERT INTO rdo_weekday_caps (cycle_id, weekday, slots) VALUES (?, ?, ?) ON CONFLICT(cycle_id, weekday) DO UPDATE SET slots = excluded.slots")
@@ -411,7 +577,7 @@ app.put("/api/cycles/:id/weekday-caps", requireAdmin, async (c) => {
 
 app.put("/api/cycles/:id/slot-windows", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const { windows } = await c.req.json<{ windows: { start_date: string; end_date: string; slots_per_day: number }[] }>();
   const sorted = [...(windows ?? [])].sort((a, b) => a.start_date.localeCompare(b.start_date));
@@ -420,6 +586,8 @@ app.put("/api/cycles/:id/slot-windows", requireAdmin, async (c) => {
       return c.json({ error: "Leave slot date ranges cannot overlap." }, 400);
     }
   }
+  const capError = await assertLeaveCapacity(c.env.DB, id, cycle.default_slots_per_day, sorted);
+  if (capError) return c.json({ error: capError }, 400);
   await c.env.DB.prepare("DELETE FROM leave_slot_windows WHERE cycle_id = ?").bind(id).run();
   const stmts = sorted.map((w) =>
     c.env.DB
@@ -432,12 +600,13 @@ app.put("/api/cycles/:id/slot-windows", requireAdmin, async (c) => {
 
 app.post("/api/cycles/:id/start-rdo", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   if (cycle.phase !== "setup") return c.json({ error: "RDO bidding already started." }, 400);
   const bidders = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE active = 1 AND seniority IS NOT NULL").first<{ n: number }>();
   if (!bidders?.n) return c.json({ error: "Import a seniority roster before starting the bid." }, 400);
-  await c.env.DB.prepare("UPDATE cycles SET phase = 'rdo_bidding' WHERE id = ?").bind(id).run();
+  await c.env.DB.prepare("UPDATE cycles SET phase = 'rdo_bidding', paused = 0 WHERE id = ?").bind(id).run();
   const queue = await getQueue(c.env.DB, id, "rdo");
   if (queue.current) await notifyTurn(c.env, queue.current, "rdo");
   return c.json({ ok: true, current: queue.current ? publicUser(queue.current) : null });
@@ -445,21 +614,86 @@ app.post("/api/cycles/:id/start-rdo", requireAdmin, async (c) => {
 
 app.post("/api/cycles/:id/start-leave", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   if (cycle.phase === "leave_bidding" || cycle.phase === "complete") {
     return c.json({ error: "Leave bidding already started." }, 400);
   }
-  await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding' WHERE id = ?").bind(id).run();
+  await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding', paused = 0 WHERE id = ?").bind(id).run();
   const queue = await getQueue(c.env.DB, id, "leave");
   if (queue.current) await notifyTurn(c.env, queue.current, "leave", cycle.leave_year);
   return c.json({ ok: true, current: queue.current ? publicUser(queue.current) : null });
 });
 
+app.post("/api/cycles/:id/pause", requireAdmin, async (c) => {
+  const id = Number(c.req.param("id"));
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
+  if (!cycle) return c.json({ error: "Cycle not found." }, 404);
+  if (cycle.phase !== "rdo_bidding" && cycle.phase !== "leave_bidding") {
+    return c.json({ error: "Start bidding before pausing." }, 400);
+  }
+  if (cycle.paused) return c.json({ error: "Bidding is already paused." }, 400);
+  await c.env.DB.prepare("UPDATE cycles SET paused = 1 WHERE id = ?").bind(id).run();
+  const phase = cycle.phase === "rdo_bidding" ? "rdo" : "leave";
+  const queue = await getQueue(c.env.DB, id, phase);
+  if (queue.current) {
+    await notify(
+      c.env,
+      queue.current.id,
+      "Bidding is paused",
+      "An administrator paused bidding. You will be notified when it starts again.",
+    );
+  }
+  return c.json({ ok: true });
+});
+
+app.post("/api/cycles/:id/resume", requireAdmin, async (c) => {
+  const id = Number(c.req.param("id"));
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
+  if (!cycle) return c.json({ error: "Cycle not found." }, 404);
+  if (!cycle.paused) return c.json({ error: "Bidding is not paused." }, 400);
+  if (cycle.phase !== "rdo_bidding" && cycle.phase !== "leave_bidding") {
+    await c.env.DB.prepare("UPDATE cycles SET paused = 0 WHERE id = ?").bind(id).run();
+    return c.json({ ok: true });
+  }
+  await c.env.DB.prepare("UPDATE cycles SET paused = 0 WHERE id = ?").bind(id).run();
+  const phase = cycle.phase === "rdo_bidding" ? "rdo" : "leave";
+  const queue = await getQueue(c.env.DB, id, phase);
+  if (queue.current) await notifyTurn(c.env, queue.current, phase, cycle.leave_year);
+  return c.json({ ok: true });
+});
+
+app.post("/api/cycles/:id/end", requireAdmin, async (c) => {
+  const id = Number(c.req.param("id"));
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
+  if (!cycle) return c.json({ error: "Cycle not found." }, 404);
+  if (cycle.phase !== "rdo_bidding" && cycle.phase !== "leave_bidding") {
+    return c.json({ error: "No bid is in progress." }, 400);
+  }
+  const phase = cycle.phase === "rdo_bidding" ? "rdo" : "leave";
+  const queue = await getQueue(c.env.DB, id, phase);
+  await c.env.DB.prepare("UPDATE cycles SET phase = 'complete', paused = 0 WHERE id = ?").bind(id).run();
+  if (queue.current) {
+    await notify(
+      c.env,
+      queue.current.id,
+      "Bidding has ended",
+      "An administrator ended this bid. Contact them if you still needed a turn.",
+    );
+  }
+  return c.json({ ok: true });
+});
+
 app.post("/api/cycles/:id/skip", requireAdmin, async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  await ensurePausedColumn(c.env.DB);
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
+  if (cyclePaused(cycle)) return c.json({ error: "Bidding is paused. Resume it before skipping." }, 400);
   const { userId } = await c.req.json<{ userId?: number }>();
   const phase = cycle.phase === "rdo_bidding" ? "rdo" : cycle.phase === "leave_bidding" ? "leave" : null;
   if (!phase) return c.json({ error: "No bid is in progress." }, 400);
@@ -475,18 +709,18 @@ app.post("/api/cycles/:id/skip", requireAdmin, async (c) => {
   const next = await getQueue(c.env.DB, id, phase);
   if (next.current) await notifyTurn(c.env, next.current, phase, cycle.leave_year);
   else if (phase === "rdo") {
-    await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding' WHERE id = ?").bind(id).run();
+    await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding', paused = 0 WHERE id = ?").bind(id).run();
     const leaveQueue = await getQueue(c.env.DB, id, "leave");
     if (leaveQueue.current) await notifyTurn(c.env, leaveQueue.current, "leave", cycle.leave_year);
   } else {
-    await c.env.DB.prepare("UPDATE cycles SET phase = 'complete' WHERE id = ?").bind(id).run();
+    await c.env.DB.prepare("UPDATE cycles SET phase = 'complete', paused = 0 WHERE id = ?").bind(id).run();
   }
   return c.json({ ok: true });
 });
 
 app.get("/api/cycles/:id/status", async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const rdo = await getQueue(c.env.DB, id, "rdo");
   const leave = await getQueue(c.env.DB, id, "leave");
@@ -516,7 +750,7 @@ app.get("/api/cycles/:id/status", async (c) => {
 
 app.get("/api/cycles/:id/rdo", async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const lines = await c.env.DB.prepare("SELECT * FROM rdo_lines WHERE cycle_id = ? ORDER BY sort_order").bind(id).all<RdoLine>();
   const bids = await c.env.DB
@@ -563,8 +797,9 @@ app.get("/api/cycles/:id/rdo", async (c) => {
 
 app.post("/api/cycles/:id/rdo-bid", async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle || cycle.phase !== "rdo_bidding") return c.json({ error: "RDO bidding is not open." }, 400);
+  if (cyclePaused(cycle)) return c.json({ error: "Bidding is paused. An administrator must resume it." }, 400);
   const user = c.get("user");
   const queue = await getQueue(c.env.DB, id, "rdo");
   if (queue.current?.id !== user.id) return c.json({ error: "It is not your turn to bid RDOs." }, 403);
@@ -604,7 +839,7 @@ app.post("/api/cycles/:id/rdo-bid", async (c) => {
   if (next.current) {
     await notifyTurn(c.env, next.current, "rdo");
   } else {
-    await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding' WHERE id = ?").bind(id).run();
+    await c.env.DB.prepare("UPDATE cycles SET phase = 'leave_bidding', paused = 0 WHERE id = ?").bind(id).run();
     const leaveQueue = await getQueue(c.env.DB, id, "leave");
     if (leaveQueue.current) await notifyTurn(c.env, leaveQueue.current, "leave", cycle.leave_year);
   }
@@ -613,7 +848,7 @@ app.post("/api/cycles/:id/rdo-bid", async (c) => {
 
 app.get("/api/cycles/:id/calendar", async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle) return c.json({ error: "Cycle not found." }, 404);
   const month = c.req.query("month");
   const start = month ? `${month}-01` : cycle.leave_start;
@@ -669,8 +904,9 @@ app.get("/api/cycles/:id/my-leave", async (c) => {
 
 app.post("/api/cycles/:id/leave-bid", async (c) => {
   const id = Number(c.req.param("id"));
-  const cycle = await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>();
+  const cycle = asCycle(await c.env.DB.prepare("SELECT * FROM cycles WHERE id = ?").bind(id).first<Cycle>());
   if (!cycle || cycle.phase !== "leave_bidding") return c.json({ error: "Leave bidding is not open." }, 400);
+  if (cyclePaused(cycle)) return c.json({ error: "Bidding is paused. An administrator must resume it." }, 400);
   const user = c.get("user");
   const queue = await getQueue(c.env.DB, id, "leave");
   if (queue.current?.id !== user.id) return c.json({ error: "It is not your turn to bid leave." }, 403);
@@ -700,7 +936,7 @@ app.post("/api/cycles/:id/leave-bid", async (c) => {
 
   const next = await getQueue(c.env.DB, id, "leave");
   if (next.current) await notifyTurn(c.env, next.current, "leave", cycle.leave_year);
-  else await c.env.DB.prepare("UPDATE cycles SET phase = 'complete' WHERE id = ?").bind(id).run();
+  else await c.env.DB.prepare("UPDATE cycles SET phase = 'complete', paused = 0 WHERE id = ?").bind(id).run();
   return c.json({ ok: true, next: next.current ? publicUser(next.current) : null });
 });
 

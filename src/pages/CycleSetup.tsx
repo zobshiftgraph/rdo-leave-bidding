@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Cycle, PublicUser, SlotWindow } from "../types";
-import { WEEKDAYS } from "../types";
+import { WEEKDAYS, biddingPaused, cyclePhaseLabel } from "../types";
 
 interface LineDraft {
+  id?: number;
   name: string;
   days: number[];
   slots: number;
@@ -48,6 +49,7 @@ export default function CycleSetup() {
     setMaxLeave(data.cycle.max_leave_days?.toString() ?? "");
     setLines(
       data.lines.map((l) => ({
+        id: l.id,
         name: l.name,
         days: JSON.parse(l.days) as number[],
         slots: l.slots,
@@ -83,6 +85,7 @@ export default function CycleSetup() {
   async function saveSettings() {
     if (!status) return;
     setError("");
+    setMessage("");
     await api(`/api/cycles/${status.cycle.id}`, {
       method: "PATCH",
       body: JSON.stringify({
@@ -94,20 +97,19 @@ export default function CycleSetup() {
         max_leave_days: maxLeave ? Number(maxLeave) : null,
       }),
     });
-    if (status.cycle.phase === "setup") {
-      await api(`/api/cycles/${status.cycle.id}/rdo-lines`, { method: "PUT", body: JSON.stringify({ lines }) });
-      await api(`/api/cycles/${status.cycle.id}/weekday-caps`, {
-        method: "PUT",
-        body: JSON.stringify({ caps: caps.map((slots, weekday) => ({ weekday, slots })) }),
-      });
-    }
+    await api(`/api/cycles/${status.cycle.id}/rdo-lines`, { method: "PUT", body: JSON.stringify({ lines }) });
+    await api(`/api/cycles/${status.cycle.id}/weekday-caps`, {
+      method: "PUT",
+      body: JSON.stringify({ caps: caps.map((slots, weekday) => ({ weekday, slots })) }),
+    });
     await api(`/api/cycles/${status.cycle.id}/slot-windows`, { method: "PUT", body: JSON.stringify({ windows }) });
     setMessage("Settings saved.");
     await load();
   }
 
-  async function action(path: string) {
+  async function action(path: string, confirmMessage?: string) {
     if (!status) return;
+    if (confirmMessage && !confirm(confirmMessage)) return;
     setError("");
     try {
       await api(`/api/cycles/${status.cycle.id}/${path}`, { method: "POST", body: JSON.stringify({}) });
@@ -118,16 +120,24 @@ export default function CycleSetup() {
     }
   }
 
-  const locked = Boolean(status && status.cycle.phase !== "setup");
+  const paused = Boolean(status && biddingPaused(status.cycle));
+  const bidding = Boolean(status && (status.cycle.phase === "rdo_bidding" || status.cycle.phase === "leave_bidding"));
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold text-navy">Bid setup</h1>
-        <p className="text-slate-600">Leave bidding always covers January 1 through December 31 of the leave year.</p>
+        <p className="text-slate-600">
+          Leave bidding always covers January 1 through December 31 of the leave year. You can edit these settings after bidding starts. You cannot remove an RDO line or cut slots below what people have already taken.
+        </p>
       </div>
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
       {message && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{message}</p>}
+      {paused && (
+        <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          Bidding is paused. Nobody can submit until you resume.
+        </p>
+      )}
 
       <section className="space-y-3 rounded-xl border bg-white p-4 shadow-sm">
         <h2 className="font-semibold text-navy">Cycle</h2>
@@ -141,17 +151,16 @@ export default function CycleSetup() {
               className="w-full rounded-md border px-3 py-2"
               value={leaveYear}
               onChange={(e) => setLeaveYear(Number(e.target.value))}
-              disabled={locked}
             />
           </Field>
           <Field label="RDO style">
-            <select className="w-full rounded-md border px-3 py-2" value={mode} onChange={(e) => setMode(e.target.value as "lines" | "weekdays")} disabled={locked}>
+            <select className="w-full rounded-md border px-3 py-2" value={mode} onChange={(e) => setMode(e.target.value as "lines" | "weekdays")}>
               <option value="lines">Pick from RDO lines (Sat/Sun, Sun/Mon, …)</option>
               <option value="weekdays">Pick weekdays with a cap per day</option>
             </select>
           </Field>
           <Field label="Days off per person (weekday mode)">
-            <input type="number" min={1} max={6} className="w-full rounded-md border px-3 py-2" value={rdoDays} onChange={(e) => setRdoDays(Number(e.target.value))} disabled={locked} />
+            <input type="number" min={1} max={6} className="w-full rounded-md border px-3 py-2" value={rdoDays} onChange={(e) => setRdoDays(Number(e.target.value))} />
           </Field>
           <Field label="Default leave slots per day">
             <input type="number" min={0} className="w-full rounded-md border px-3 py-2" value={defaultSlots} onChange={(e) => setDefaultSlots(Number(e.target.value))} />
@@ -179,7 +188,35 @@ export default function CycleSetup() {
                 Start leave bidding
               </button>
             )}
-            {(status.cycle.phase === "rdo_bidding" || status.cycle.phase === "leave_bidding") && (
+            {bidding && !paused && (
+              <button
+                type="button"
+                onClick={() => action("pause", "Pause bidding? Nobody can submit until you resume.")}
+                className="rounded-md border border-amber-300 px-4 py-2 text-sm font-medium text-amber-900"
+              >
+                Pause bidding
+              </button>
+            )}
+            {paused && (
+              <button type="button" onClick={() => action("resume")} className="rounded-md bg-gold px-4 py-2 text-sm font-semibold text-navy-dark">
+                Resume bidding
+              </button>
+            )}
+            {bidding && (
+              <button
+                type="button"
+                onClick={() =>
+                  action(
+                    "end",
+                    "End bidding now? Results already submitted stay as they are. People who have not bid yet will not get a turn.",
+                  )
+                }
+                className="rounded-md border border-red-200 px-4 py-2 text-sm text-red-700"
+              >
+                End bidding
+              </button>
+            )}
+            {bidding && !paused && (
               <button type="button" onClick={() => action("skip")} className="rounded-md border border-red-200 px-4 py-2 text-sm text-red-700">
                 Skip current bidder
               </button>
@@ -188,7 +225,7 @@ export default function CycleSetup() {
         )}
         {status && (
           <p className="text-sm text-slate-600">
-            Phase: <strong>{status.cycle.phase.replace("_", " ")}</strong>
+            Phase: <strong>{cyclePhaseLabel(status.cycle)}</strong>
             {status.cycle.phase === "rdo_bidding" && status.rdo.current && ` · Now: ${status.rdo.current.name}`}
             {status.cycle.phase === "leave_bidding" && status.leave.current && ` · Now: ${status.leave.current.name}`}
           </p>
@@ -203,18 +240,16 @@ export default function CycleSetup() {
               type="button"
               className="text-sm text-navy underline"
               onClick={() => setLines((l) => [...l, { name: "", days: [6, 0], slots: 1 }])}
-              disabled={locked}
             >
               Add line
             </button>
           </div>
           <div className="space-y-3">
             {lines.map((line, idx) => (
-              <div key={idx} className="grid gap-2 rounded-lg border p-3 md:grid-cols-[1fr_auto_auto]">
+              <div key={line.id ?? `new-${idx}`} className="grid gap-2 rounded-lg border p-3 md:grid-cols-[1fr_auto_auto_auto]">
                 <input
                   className="rounded-md border px-3 py-2"
                   value={line.name}
-                  disabled={locked}
                   placeholder="Saturday / Sunday"
                   onChange={(e) => setLines((all) => all.map((x, i) => (i === idx ? { ...x, name: e.target.value } : x)))}
                 />
@@ -224,7 +259,6 @@ export default function CycleSetup() {
                       <input
                         type="checkbox"
                         className="sr-only"
-                        disabled={locked}
                         checked={line.days.includes(d)}
                         onChange={() =>
                           setLines((all) =>
@@ -245,9 +279,11 @@ export default function CycleSetup() {
                   min={1}
                   className="w-24 rounded-md border px-3 py-2"
                   value={line.slots}
-                  disabled={locked}
                   onChange={(e) => setLines((all) => all.map((x, i) => (i === idx ? { ...x, slots: Number(e.target.value) } : x)))}
                 />
+                <button type="button" className="text-sm text-red-700" onClick={() => setLines((all) => all.filter((_, i) => i !== idx))}>
+                  Remove
+                </button>
               </div>
             ))}
           </div>
@@ -266,7 +302,6 @@ export default function CycleSetup() {
                   min={0}
                   className="mt-1 w-full rounded-md border px-2 py-1"
                   value={caps[d]}
-                  disabled={locked}
                   onChange={(e) => setCaps((all) => all.map((n, i) => (i === d ? Number(e.target.value) : n)))}
                 />
               </label>

@@ -25,6 +25,7 @@ export interface Cycle {
   default_slots_per_day: number;
   max_leave_days: number | null;
   is_active: number;
+  paused: number;
 }
 
 export interface SlotWindow {
@@ -60,3 +61,12 @@ export const PHASE_LABEL: Record<Phase, string> = {
   leave_bidding: "Leave bidding",
   complete: "Complete",
 };
+
+export function biddingPaused(cycle: Pick<Cycle, "phase" | "paused">) {
+  return Boolean(cycle.paused) && (cycle.phase === "rdo_bidding" || cycle.phase === "leave_bidding");
+}
+
+export function cyclePhaseLabel(cycle: Pick<Cycle, "phase" | "paused">) {
+  const label = PHASE_LABEL[cycle.phase];
+  return biddingPaused(cycle) ? `${label} · paused` : label;
+}

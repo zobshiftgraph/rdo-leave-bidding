@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Cycle, PublicUser } from "../types";
-import { WEEKDAYS } from "../types";
+import { WEEKDAYS, biddingPaused } from "../types";
 
 interface RdoData {
   cycle: Cycle;
@@ -50,15 +50,22 @@ export default function RdoBid({ user }: { user: PublicUser }) {
   }
 
   const mine = data.bids.find((b) => b.user_id === user.id);
+  const paused = biddingPaused(data.cycle);
+  const canBid = data.myTurn && !paused && data.cycle.phase === "rdo_bidding";
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-semibold text-navy">Regular Days Off</h1>
         <p className="text-slate-600">
-          Bidding follows seniority. {data.current ? `Current bidder: ${data.current.name}.` : "RDO bidding is complete."}
+          Bidding follows seniority. {paused ? "Bidding is paused." : data.current ? `Current bidder: ${data.current.name}.` : "RDO bidding is complete."}
         </p>
       </div>
+      {paused && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          Bidding is paused. You cannot submit until an administrator resumes it.
+        </p>
+      )}
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
       {done && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{done}</p>}
       {mine && (
@@ -85,7 +92,7 @@ export default function RdoBid({ user }: { user: PublicUser }) {
                 <input
                   type="radio"
                   name="rdo"
-                  disabled={!data.myTurn || line.remaining <= 0}
+                  disabled={!canBid || line.remaining <= 0}
                   checked={choice === line.id}
                   onChange={() => setChoice(line.id)}
                 />
@@ -113,7 +120,7 @@ export default function RdoBid({ user }: { user: PublicUser }) {
                 <button
                   key={cap.weekday}
                   type="button"
-                  disabled={!data.myTurn || full}
+                  disabled={!canBid || full}
                   onClick={() =>
                     setDays((cur) => {
                       if (cur.includes(cap.weekday)) return cur.filter((d) => d !== cap.weekday);
@@ -136,7 +143,7 @@ export default function RdoBid({ user }: { user: PublicUser }) {
 
       <button
         type="button"
-        disabled={!data.myTurn}
+        disabled={!canBid}
         onClick={submit}
         className="rounded-md bg-navy px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
       >

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import MonthCalendar from "../components/MonthCalendar";
 import { api } from "../api";
 import type { CalendarDay, Cycle, PublicUser } from "../types";
+import { biddingPaused } from "../types";
 
 export default function LeaveBid({ user }: { user: PublicUser }) {
   const [cycle, setCycle] = useState<Cycle | null>(null);
@@ -24,8 +25,9 @@ export default function LeaveBid({ user }: { user: PublicUser }) {
       setSubmitted(true);
       setSelected(new Set(mine.dates));
     }
-    const status = await api<{ leave: { current: PublicUser | null } }>(`/api/cycles/${active.id}/status`);
-    setMyTurn(status.leave.current?.id === user.id && active.phase === "leave_bidding");
+    const status = await api<{ leave: { current: PublicUser | null }; cycle: Cycle }>(`/api/cycles/${active.id}/status`);
+    setCycle(status.cycle);
+    setMyTurn(status.leave.current?.id === user.id && status.cycle.phase === "leave_bidding" && !biddingPaused(status.cycle));
   }
 
   useEffect(() => {
@@ -81,6 +83,11 @@ export default function LeaveBid({ user }: { user: PublicUser }) {
           Selected: <strong>{selected.size}</strong> day{selected.size === 1 ? "" : "s"}
         </div>
       </div>
+      {cycle.paused && (cycle.phase === "leave_bidding" || cycle.phase === "rdo_bidding") && (
+        <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950">
+          Bidding is paused. You cannot submit until an administrator resumes it.
+        </p>
+      )}
       {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
       {done && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{done}</p>}
       {myTurn && !submitted && (

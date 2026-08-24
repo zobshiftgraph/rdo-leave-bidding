@@ -3,6 +3,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import type { NotificationItem, PublicUser } from "../types";
 import PushBanner from "./PushBanner";
+import PausedBanner from "./PausedBanner";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-md px-3 py-2 text-sm font-medium ${isActive ? "bg-white/15 text-white" : "text-slate-200 hover:bg-white/10 hover:text-white"}`;
@@ -126,6 +127,7 @@ export default function Layout({
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">
         <PushBanner />
+        <PausedBanner />
         {children}
       </main>
     </div>

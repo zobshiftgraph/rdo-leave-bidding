@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import type { Cycle, PublicUser } from "../types";
-import { PHASE_LABEL } from "../types";
+import { biddingPaused, cyclePhaseLabel } from "../types";
 
 interface Status {
   cycle: Cycle;
@@ -33,7 +33,8 @@ export default function Dashboard({ user }: { user: PublicUser }) {
       : status?.cycle.phase === "leave_bidding"
         ? status.leave.current
         : null;
-  const myTurn = current?.id === user.id;
+  const paused = status ? biddingPaused(status.cycle) : false;
+  const myTurn = Boolean(current?.id === user.id && !paused);
 
   return (
     <div className="space-y-6">
@@ -76,7 +77,7 @@ export default function Dashboard({ user }: { user: PublicUser }) {
             </div>
           )}
           <div className="grid gap-4 md:grid-cols-3">
-            <Card title="Bid cycle" value={status.cycle.name} hint={PHASE_LABEL[status.cycle.phase]} />
+            <Card title="Bid cycle" value={status.cycle.name} hint={cyclePhaseLabel(status.cycle)} />
             <Card
               title="Leave year"
               value={String(status.cycle.leave_year)}
@@ -84,8 +85,8 @@ export default function Dashboard({ user }: { user: PublicUser }) {
             />
             <Card
               title="Now bidding"
-              value={current?.name ?? (status.cycle.phase === "complete" ? "Finished" : "Waiting")}
-              hint={current && current.id !== user.id ? "You will be notified when it is your turn" : " "}
+              value={paused ? "Paused" : current?.name ?? (status.cycle.phase === "complete" ? "Finished" : "Waiting")}
+              hint={paused ? "An administrator paused bidding" : current && current.id !== user.id ? "You will be notified when it is your turn" : " "}
             />
           </div>
           <div className="grid gap-4 md:grid-cols-2">
